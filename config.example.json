@@ -1,5 +1,6 @@
 {
   "timeoutMs": 15000,
+  "usage": { "cacheSeconds": 60, "timeoutMs": 3000 },
   "models": [
     {
       "id": "openai-codex/gpt-6-astra",
@@ -11,7 +12,8 @@
         "preferWhen": ["task_requires_architecture", "task_requires_system_design", "implementation_is_complex", "frontend_requires_significant_visual_design", "task_requires_3d_design_or_implementation", "consequences_are_high"],
         "avoidWhen": ["task_is_simple", "task_is_bounded", "task_is_primarily_search", "cheaper_model_is_sufficient"]
       },
-      "benchmarks": { "artificialAnalysis": { "intelligenceIndex": null, "costPerTask": null } }
+      "benchmarks": { "artificialAnalysis": { "intelligenceIndex": null, "costPerTask": null } },
+      "usage": { "source": "codex" }
     },
     {
       "id": "openai-codex/gpt-6-sol",
@@ -23,7 +25,8 @@
         "preferWhen": ["task_requires_code", "implementation_is_general", "task_requires_strong-reasoning", "muse_requires_escalation", "code_review_requires_escalation", "build_error_requires_escalation", "quality_matters_but_astra_is_unnecessary"],
         "avoidWhen": ["task_is_simple_search", "task_is_trivial", "task_requires_high-consequence-architecture"]
       },
-      "benchmarks": { "artificialAnalysis": { "intelligenceIndex": null, "costPerTask": null } }
+      "benchmarks": { "artificialAnalysis": { "intelligenceIndex": null, "costPerTask": null } },
+      "usage": { "source": "codex" }
     },
     {
       "id": "openai-codex/gpt-6-luna",
@@ -35,7 +38,8 @@
         "preferWhen": ["cost_is_high_priority", "latency_is_not_important", "task_is_low-consequence", "task_requires_more-reasoning-than-muse"],
         "avoidWhen": ["latency_is_important", "implementation_is_complex", "task_is_high-risk"]
       },
-      "benchmarks": { "artificialAnalysis": { "intelligenceIndex": null, "costPerTask": null } }
+      "benchmarks": { "artificialAnalysis": { "intelligenceIndex": null, "costPerTask": null } },
+      "usage": { "source": "codex" }
     },
     {
       "id": "meta/muse-spark-1.3-contributor",
@@ -48,7 +52,8 @@
         "avoidWhen": ["implementation_is_complex", "task_is_high-risk", "instruction_precision_is_critical", "architecture_is_required"],
         "escalateTo": "openai-codex/gpt-6-sol"
       },
-      "benchmarks": { "artificialAnalysis": { "intelligenceIndex": null, "costPerTask": null } }
+      "benchmarks": { "artificialAnalysis": { "intelligenceIndex": null, "costPerTask": null } },
+      "usage": { "source": "none" }
     }
   ],
   "agents": [

@@ -3,7 +3,10 @@ import { basename, dirname, resolve } from 'node:path';
 import { Type } from 'typebox';
 import { getSupportedThinkingLevels, StringEnum } from '@earendil-works/pi-ai';
 import { getAgentDir, parseFrontmatter, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import { THINKING, route, rpc, validateConfig, validateInput } from './router.ts';
+import { THINKING, pairs, route, rpc, validateConfig, validateInput } from './router.ts';
+import { collectUsage } from './usage.ts';
+import { claudeUsage } from './usage-claude.ts';
+import { codexUsage } from './usage-codex.ts';
 
 /** Route one delegated task, then use pi-subagents' documented RPC executor. */
 export default function jevRouter(pi: ExtensionAPI) {
@@ -51,6 +54,14 @@ export default function jevRouter(pi: ExtensionAPI) {
         return [{ ...entry, thinking: { ...entry.thinking, supported } }];
       });
       validateInput(config, params);
+      // Usage only informs the execution question, which Jev gets only with two or more candidates.
+      // Runs alongside agent discovery. Failures become unknown usage; the catch also guarantees no
+      // unhandled rejection while discovery is still awaiting.
+      const candidates = pairs(config, params);
+      const usage = candidates.length > 1
+        ? collectUsage(config, [...new Set(candidates.map(c => c.model))], { codex: codexUsage, claude: claudeUsage },
+          { available, registry: ctx.modelRegistry }, signal).catch(() => ({}))
+        : Promise.resolve({});
       // pi-subagents 0.19 reloadCustomAgents uses process.cwd(), even when ctx.cwd differs.
       // Match that discovery base exactly; a union could approve definitions the executor never loads.
       const definitions = new Map<string, { path: string; description: unknown; enabled: unknown }>();
@@ -75,7 +86,7 @@ export default function jevRouter(pi: ExtensionAPI) {
         }
         return { name: entry.name, description: definition.description };
       });
-      const selection = await route(config, params, agents, signal);
+      const selection = await route(config, params, agents, signal, fetch, process.env.TYPESAFE_API_KEY, await usage);
       signal?.throwIfAborted();
       const model = available.find(m => `${m.provider}/${m.id}` === selection.model)!;
       const result = await rpc(pi.events, 'spawn', {

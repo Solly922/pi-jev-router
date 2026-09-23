@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import type { UsageReport } from './usage.ts';
 
 export const THINKING = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type Thinking = typeof THINKING[number];
+export const USAGE_SOURCES = ['codex', 'claude', 'none'] as const;
 export type Selection = { agent: string; model: string; thinking: Thinking };
 export type ModelConfig = {
   id: string;
@@ -11,9 +13,12 @@ export type ModelConfig = {
   thinking: { supported: Thinking[]; default: Thinking };
   routing: { preferWhen: string[]; avoidWhen: string[]; escalateTo?: string };
   benchmarks: { artificialAnalysis: { intelligenceIndex: number | null; costPerTask: number | null } };
+  /** Where live subscription usage comes from. `modelWindow` picks an extra per-model Claude window. */
+  usage?: { source: typeof USAGE_SOURCES[number]; modelWindow?: string };
 };
 export type Config = {
   timeoutMs: number;
+  usage?: { cacheSeconds?: number; timeoutMs?: number };
   models: ModelConfig[];
   agents: { name: string; definition: string }[];
   fallback?: Selection;
@@ -31,6 +36,12 @@ export function validateConfig(value: unknown): Config {
   if (!Array.isArray(c.models) || !c.models.length || !Array.isArray(c.agents) || !c.agents.length) {
     throw new Error('Jev router requires nonempty models and agents arrays.');
   }
+  const between = (value: unknown, min: number, max: number) => value === undefined ||
+    (Number.isInteger(value) && (value as number) >= min && (value as number) <= max);
+  if (c.usage !== undefined && (!c.usage || typeof c.usage !== 'object' || Array.isArray(c.usage) ||
+      !between(c.usage.cacheSeconds, 10, 3600) || !between(c.usage.timeoutMs, 100, 10_000))) {
+    throw new Error('Jev router usage.cacheSeconds must be 10-3600 and usage.timeoutMs 100-10000.');
+  }
   const tags = (value: unknown): value is string[] => Array.isArray(value) &&
     value.every(item => typeof item === 'string' && item.trim().length > 0);
   const metric = (value: unknown): value is number | null => value === null ||
@@ -46,7 +57,10 @@ export function validateConfig(value: unknown): Config {
         (m.routing.escalateTo !== undefined && (typeof m.routing.escalateTo !== 'string' || !m.routing.escalateTo.trim())) ||
         !m.benchmarks?.artificialAnalysis ||
         !metric(m.benchmarks.artificialAnalysis.intelligenceIndex) ||
-        !metric(m.benchmarks.artificialAnalysis.costPerTask)) throw new Error(`Invalid Jev model entry: ${m?.id ?? 'unknown'}.`);
+        !metric(m.benchmarks.artificialAnalysis.costPerTask) ||
+        (m.usage !== undefined && (!m.usage || !USAGE_SOURCES.includes(m.usage.source) ||
+          (m.usage.modelWindow !== undefined && (m.usage.source !== 'claude' ||
+            typeof m.usage.modelWindow !== 'string' || !m.usage.modelWindow.trim()))))) throw new Error(`Invalid Jev model entry: ${m?.id ?? 'unknown'}.`);
   }
   for (const m of c.models) {
     if (m.routing.escalateTo && (m.routing.escalateTo === m.id || !c.models.some(other => other.id === m.routing.escalateTo))) {
@@ -80,7 +94,7 @@ export function validateInput(c: Config, p: Input): void {
 }
 
 /** Build joint candidates so Jev cannot select an incompatible thinking/model combination. */
-function pairs(c: Config, p: Partial<Input>): Omit<Selection, 'agent'>[] {
+export function pairs(c: Config, p: Partial<Input>): Omit<Selection, 'agent'>[] {
   return c.models.filter(m => p.model === undefined || m.id === p.model)
     .flatMap(m => m.thinking.supported.filter(t => p.thinking === undefined || t === p.thinking)
       .map(thinking => ({ model: m.id, thinking })));
@@ -95,24 +109,32 @@ export function validateSelection(c: Config, s: Selection): Selection {
   return s;
 }
 
-/** One request, no retries. Full overrides need no paid inference. */
+const USAGE_INSTRUCTIONS = ' Each option\'s usage field reports remaining subscription usage: remainingPercent per window and minutes until it resets. Options with the same pool share one limit. When several options are adequate, prefer those with more remaining usage, weighing long windows over short windows that reset soon. modelAvailable false means the provider reports that model unavailable. Status unknown means no data, not an exhausted quota; stale values are older estimates. Usage is advisory; adequacy for the task comes first.';
+
+/** One request, no retries. Full overrides need no paid inference. `usage` is advisory and keyed by model ID. */
 export async function route(c: Config, p: Input, agents: Agent[], signal?: AbortSignal,
-  fetcher: typeof fetch = fetch, apiKey = process.env.TYPESAFE_API_KEY): Promise<Selection & { source: string }> {
+  fetcher: typeof fetch = fetch, apiKey = process.env.TYPESAFE_API_KEY,
+  usage: Record<string, UsageReport> = {}): Promise<Selection & { source: string }> {
   validateInput(c, p);
   signal?.throwIfAborted();
   const choices = pairs(c, p);
   const agentChoices = agents.filter(a => p.agent === undefined || p.agent === a.name);
   if (!agentChoices.length) throw new Error('No enabled configured agents are available.');
+  const hasUsage = Object.keys(usage).length > 0;
   const questions: Record<string, unknown> = {};
   if (agentChoices.length > 1) questions.agent = {
     type: 'choice', instructions: 'Choose the existing agent whose role best fits the delegated task. Select none if none is appropriate.',
     criteria: { ...Object.fromEntries(agentChoices.map(a => [a.name, a.description])), none: 'No suitable agent.' },
   };
   if (choices.length > 1) questions.execution = {
-    type: 'choice', instructions: 'Choose the model and thinking effort adequate for the task. Prefer lower cost and effort when adequate. The configured default is a preference only if it appears in the supported thinking levels; otherwise ignore it. Routing hints and escalation targets are advisory only; no second agent is launched. Null benchmarks mean unknown, not zero. Select none if no option is adequate.',
-    criteria: { ...Object.fromEntries(choices.map((s, i) => [`option_${i}`, {
-      ...c.models.find(m => m.id === s.model), selectedThinking: s.thinking,
-    }])), none: 'No suitable execution configuration.' },
+    type: 'choice', instructions: 'Choose the model and thinking effort adequate for the task. Prefer lower cost and effort when adequate. The configured default is a preference only if it appears in the supported thinking levels; otherwise ignore it. Routing hints and escalation targets are advisory only; no second agent is launched. Null benchmarks mean unknown, not zero. Select none if no option is adequate.' +
+      (hasUsage ? USAGE_INSTRUCTIONS : ''),
+    criteria: { ...Object.fromEntries(choices.map((s, i) => {
+      // The configured usage source is local plumbing; Jev gets the measured report instead.
+      const { usage: _source, ...model } = c.models.find(m => m.id === s.model)!;
+      return [`option_${i}`, { ...model, selectedThinking: s.thinking,
+        ...(hasUsage ? { usage: usage[s.model] ?? { status: 'unknown' } } : {}) }];
+    })), none: 'No suitable execution configuration.' },
   };
   try {
     let answers: any = {};
