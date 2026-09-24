@@ -57,6 +57,9 @@ test('JevAgent reads user config and delegates through the existing RPC contract
         benchmarks: { artificialAnalysis: { intelligenceIndex: null, costPerTask: null } } }],
       agents: [{ name: 'architect', definition: '../agents/architect.md' }],
     });
+    await writeFile(configPath, JSON.stringify({ ...JSON.parse(initialConfig), notes: [' '] }));
+    await assert.rejects(run(originalCwd), /Invalid Jev router config at .*notes must be an array of nonempty strings/);
+    assert.equal(pings, 0, 'Invalid notes must fail before contacting the executor');
     await writeFile(configPath, initialConfig);
     const result = await run(originalCwd);
     assert.equal(spawn.type, 'architect');

@@ -10,6 +10,7 @@ export type ModelConfig = {
   tier: string;
   strengths: string[];
   weaknesses: string[];
+  grades?: Record<string, number>;
   thinking: { supported: Thinking[]; default: Thinking };
   routing: { preferWhen: string[]; avoidWhen: string[]; escalateTo?: string };
   benchmarks: { artificialAnalysis: { intelligenceIndex: number | null; costPerTask: number | null } };
@@ -18,6 +19,7 @@ export type ModelConfig = {
 };
 export type Config = {
   timeoutMs: number;
+  notes?: string[];
   usage?: { cacheSeconds?: number; timeoutMs?: number };
   models: ModelConfig[];
   agents: { name: string; definition: string }[];
@@ -46,9 +48,13 @@ export function validateConfig(value: unknown): Config {
     value.every(item => typeof item === 'string' && item.trim().length > 0);
   const metric = (value: unknown): value is number | null => value === null ||
     (typeof value === 'number' && Number.isFinite(value) && value >= 0);
+  if (c.notes !== undefined && !tags(c.notes)) throw new Error('Jev router notes must be an array of nonempty strings.');
   for (const m of c.models) {
     if (!m || typeof m.id !== 'string' || !/^[^\s/]+\/\S+$/.test(m.id) ||
         typeof m.tier !== 'string' || !m.tier.trim() || !tags(m.strengths) || !tags(m.weaknesses) ||
+        (m.grades !== undefined && (!m.grades || typeof m.grades !== 'object' || Array.isArray(m.grades) ||
+          Object.entries(m.grades).some(([skill, grade]) => !skill.trim() || skill !== skill.trim() ||
+            !Number.isInteger(grade) || grade < 1 || grade > 10))) ||
         !m.thinking || !Array.isArray(m.thinking.supported) || !m.thinking.supported.length ||
         m.thinking.supported.some(t => !THINKING.includes(t)) ||
         new Set(m.thinking.supported).size !== m.thinking.supported.length ||
@@ -127,7 +133,7 @@ export async function route(c: Config, p: Input, agents: Agent[], signal?: Abort
     criteria: { ...Object.fromEntries(agentChoices.map(a => [a.name, a.description])), none: 'No suitable agent.' },
   };
   if (choices.length > 1) questions.execution = {
-    type: 'choice', instructions: 'Choose the model and thinking effort adequate for the task. Prefer lower cost and effort when adequate. The configured default is a preference only if it appears in the supported thinking levels; otherwise ignore it. Routing hints and escalation targets are advisory only; no second agent is launched. Null benchmarks mean unknown, not zero. Select none if no option is adequate.' +
+    type: 'choice', instructions: 'Choose the model and thinking effort adequate for the task. Prefer lower cost and effort when adequate. The configured default is a preference only if it appears in the supported thinking levels; otherwise ignore it. Routing hints and escalation targets are advisory only; no second agent is launched. Null benchmarks mean unknown, not zero. User notes in state are advisory preferences. Model grades are user-assigned 1-10 scores: favor higher grades for skills relevant to the task, but an absent grade means unknown, not zero. Task adequacy comes first. Select none if no option is adequate.' +
       (hasUsage ? USAGE_INSTRUCTIONS : ''),
     criteria: { ...Object.fromEntries(choices.map((s, i) => {
       // The configured usage source is local plumbing; Jev gets the measured report instead.
@@ -143,7 +149,8 @@ export async function route(c: Config, p: Input, agents: Agent[], signal?: Abort
       const deadline = AbortSignal.timeout(c.timeoutMs);
       const response = await fetcher('https://api.typesafe.ai/v1/systemone', {
         method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'jev-latest', state: { task: p.prompt, description: p.description }, questions }),
+        body: JSON.stringify({ model: 'jev-latest', state: { task: p.prompt, description: p.description,
+          ...(c.notes?.length ? { notes: c.notes } : {}) }, questions }),
         signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
       });
       if (!response.ok) throw new Error(`TypeSafe returned HTTP ${response.status}.`);

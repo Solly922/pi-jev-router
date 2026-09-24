@@ -1,5 +1,6 @@
 {
   "timeoutMs": 15000,
+  "notes": [],
   "usage": { "cacheSeconds": 60, "timeoutMs": 3000 },
   "models": [
     {
@@ -7,6 +8,7 @@
       "tier": "expert",
       "strengths": ["architecture", "planning", "complex-implementation", "frontend-design", "3d-design", "3d-implementation", "high-risk-reasoning"],
       "weaknesses": ["higher-cost", "can-overcomplicate-bounded-tasks"],
+      "grades": {},
       "thinking": { "supported": ["low", "medium", "high"], "default": "medium" },
       "routing": {
         "preferWhen": ["task_requires_architecture", "task_requires_system_design", "implementation_is_complex", "frontend_requires_significant_visual_design", "task_requires_3d_design_or_implementation", "consequences_are_high"],

@@ -41,10 +41,12 @@ test('one Jev request selects an agent and a compatible model/thinking pair', as
     const body = JSON.parse(init!.body as string);
     assert.equal(body.model, 'jev-latest');
     assert.equal(body.state.task, task.prompt);
+    assert.equal(body.state.notes, undefined);
     assert.deepEqual(Object.keys(body.questions), ['agent', 'execution']);
     const candidate = body.questions.execution.criteria.option_0;
     assert.equal(candidate.selectedThinking, 'low');
     assert.equal(candidate.tier, 'fast-economy');
+    assert.equal(candidate.grades, undefined);
     assert.deepEqual(candidate.strengths, ['lookups']);
     assert.deepEqual(candidate.routing.preferWhen, ['task_is_search']);
     assert.equal(candidate.routing.escalateTo, 'local/strong');
@@ -55,6 +57,37 @@ test('one Jev request selects an agent and a compatible model/thinking pair', as
   assert.deepEqual(await route(config(), task, agents, undefined, fetcher, 'test-key'),
     { agent: 'Explore', model: 'local/cheap', thinking: 'low', source: 'jev' });
   assert.equal(requests, 1);
+});
+
+test('user notes and model grades reach Jev as advisory routing context', async () => {
+  const c = validateConfig({ ...config(), notes: ['Prefer local/strong for frontend work.'], models: [
+    { ...config().models[0], grades: { frontend: 9 } },
+    { ...config().models[1], grades: { frontend: 10 } },
+  ] });
+  const result = await route(c, task, agents, undefined, async (_url, init) => {
+    const body = JSON.parse(init!.body as string);
+    assert.deepEqual(body.state.notes, c.notes);
+    assert.deepEqual(body.questions.execution.criteria.option_0.grades, { frontend: 9 });
+    assert.deepEqual(body.questions.execution.criteria.option_1.grades, { frontend: 10 });
+    assert.match(body.questions.execution.instructions, /Task adequacy comes first/);
+    // Grades guide Jev; they never force the highest-scored option.
+    return Response.json({ answers: { agent: answer('Explore'), execution: answer('option_0') } });
+  }, 'test-key');
+  assert.equal(result.model, 'local/cheap');
+});
+
+test('notes and grades are optional but reject malformed values', () => {
+  const original = config();
+  assert.equal(original.notes, undefined);
+  assert.equal(original.models[0].grades, undefined);
+  for (const notes of ['prefer cheap', [42], [' '], null]) {
+    assert.throws(() => validateConfig({ ...original, notes }), /notes/);
+  }
+  for (const grades of [null, [], 'frontend: 10', { ' ': 10 }, { ' frontend ': 10 }, { frontend: 0 },
+    { frontend: 11 }, { frontend: 9.5 }, { frontend: '10' }]) {
+    assert.throws(() => validateConfig({ ...original,
+      models: [{ ...original.models[0], grades }, original.models[1]] }), /Invalid Jev model entry/);
+  }
 });
 
 test('complete explicit overrides bypass inference and preserve all fields', async () => {
