@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { FAST_MODE_PROVIDERS } from './fast-mode.ts';
 import type { UsageReport } from './usage.ts';
 
 export const THINKING = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
@@ -17,7 +16,7 @@ export type ModelConfig = {
   benchmarks: { artificialAnalysis: { intelligenceIndex: number | null; costPerTask: number | null } };
   /** Where live subscription usage comes from. `modelWindow` picks an extra per-model Claude window. */
   usage?: { source: typeof USAGE_SOURCES[number]; modelWindow?: string };
-  /** Always launch this model on OpenAI's priority tier through pi-openai-fast-mode. */
+  /** Launch this openai-codex model's always-priority twin from pi-openai-fast-mode. */
   fast?: boolean;
 };
 export type Config = {
@@ -31,6 +30,15 @@ export type Config = {
 export type Input = { prompt: string; description: string; agent?: string; model?: string; thinking?: Thinking; max_turns?: number };
 export type Agent = { name: string; description: string };
 type Bus = { on(event: string, handler: (data: any) => void): () => void; emit(event: string, data: unknown): void };
+
+const CODEX = 'openai-codex';
+/** pi-openai-fast-mode (Solly922 fork) lists each Codex model again here, always on the priority tier. */
+export const FAST_CODEX = 'openai-codex-fast';
+
+/** The registry model to launch for a configured entry: its fast twin when `fast` is set. */
+export function launchModelId(m: Pick<ModelConfig, 'id' | 'fast'>): string {
+  return m.fast ? `${FAST_CODEX}/${m.id.slice(CODEX.length + 1)}` : m.id;
+}
 
 /** Reject configuration errors before sending task content or starting an agent. */
 export function validateConfig(value: unknown): Config {
@@ -71,9 +79,7 @@ export function validateConfig(value: unknown): Config {
           (m.usage.modelWindow !== undefined && (m.usage.source !== 'claude' ||
             typeof m.usage.modelWindow !== 'string' || !m.usage.modelWindow.trim())))) ||
         (m.fast !== undefined && typeof m.fast !== 'boolean')) throw new Error(`Invalid Jev model entry: ${m?.id ?? 'unknown'}.`);
-    if (m.fast && !FAST_MODE_PROVIDERS.includes(m.id.split('/')[0])) {
-      throw new Error(`fast is only supported for ${FAST_MODE_PROVIDERS.join(' and ')} models: ${m.id}.`);
-    }
+    if (m.fast && !m.id.startsWith(`${CODEX}/`)) throw new Error(`fast is only supported for ${CODEX} models: ${m.id}.`);
   }
   for (const m of c.models) {
     if (m.routing.escalateTo && (m.routing.escalateTo === m.id || !c.models.some(other => other.id === m.routing.escalateTo))) {

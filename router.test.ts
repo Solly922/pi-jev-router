@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { route, rpc, validateConfig, type Config, type Input } from './router.ts';
+import { launchModelId, route, rpc, validateConfig, type Config, type Input } from './router.ts';
 
 const config = (): Config => validateConfig({
   timeoutMs: 100,
@@ -90,14 +90,18 @@ test('notes and grades are optional but reject malformed values', () => {
   }
 });
 
-test('fast is an OpenAI-only boolean and never reaches Jev', async () => {
+test('fast is a Codex-only boolean, maps to the fast twin and never reaches Jev', async () => {
   const original = config();
   const openai = (fast: unknown) => ({ ...original.models[1], id: 'openai-codex/gpt-6.1-sol', fast });
   for (const fast of ['true', 1, null]) {
     assert.throws(() => validateConfig({ ...original, models: [...original.models, openai(fast)] }), /Invalid Jev model entry/);
   }
-  assert.throws(() => validateConfig({ ...original, models: [original.models[0], { ...original.models[1], fast: true }] }),
-    /fast is only supported for openai and openai-codex models: local\/strong/);
+  for (const id of ['local/strong', 'openai/gpt-6.1-sol', 'openai-codex-fast/gpt-6.1-sol']) {
+    assert.throws(() => validateConfig({ ...original, models: [...original.models, { ...original.models[1], id, fast: true }] }),
+      /fast is only supported for openai-codex models/);
+  }
+  assert.equal(launchModelId({ id: 'openai-codex/gpt-6.1-sol', fast: true }), 'openai-codex-fast/gpt-6.1-sol');
+  assert.equal(launchModelId({ id: 'openai-codex/gpt-6.1-sol' }), 'openai-codex/gpt-6.1-sol');
   // fast: false is allowed anywhere; it is the default.
   validateConfig({ ...original, models: [original.models[0], { ...original.models[1], fast: false }] });
 

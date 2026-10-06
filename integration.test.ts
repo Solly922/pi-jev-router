@@ -71,22 +71,22 @@ test('JevAgent reads user config and delegates through the existing RPC contract
     assert.equal(result.details.source, 'constraints');
     assert.equal(result.details.fast, false);
 
-    // fast: true launches the marked copy that pi-openai-fast-mode maps back to the real model.
+    // fast: true launches the always-priority twin that pi-openai-fast-mode registers.
     const fastConfig = JSON.parse(initialConfig);
     fastConfig.models[0].fast = true;
     await writeFile(configPath, JSON.stringify(fastConfig));
-    const fastResult = await run(originalCwd);
-    assert.deepEqual(spawn.options.model, { ...model, id: 'gpt-6-astra-fast', name: 'gpt-6-astra (fast)',
-      fastModeVariant: { baseModelId: 'gpt-6-astra' } });
+    const fastModel = { ...model, provider: 'openai-codex-fast' };
+    const fastContext = (models: object[]) => ({ cwd: originalCwd, modelRegistry: { getAvailable: () => models } });
+    const fastResult = await tool.execute('fast-call', params, undefined, undefined, fastContext([model, fastModel]));
+    assert.equal(spawn.options.model, fastModel);
+    assert.equal(fastResult.details.model, 'openai-codex/gpt-6-astra');
     assert.equal(fastResult.details.fast, true);
     assert.match(fastResult.content[0].text, /openai-codex\/gpt-6-astra \(fast\), thinking high/);
-    // An agent that never loads the extension would send the copy's ID to OpenAI, so refuse it.
-    await writeFile(resolve(agentDir, 'agents/architect.md'),
-      '---\nname: architect\ndescription: Reviews boundaries\nextensions: pi-claude-bridge\n---\n');
+    // Without the twin, fail before routing instead of silently launching the normal model.
     spawn = undefined;
-    await assert.rejects(run(originalCwd), /architect does not load pi-openai-fast-mode/);
+    await assert.rejects(tool.execute('no-twin-call', params, undefined, undefined, fastContext([model])),
+      /openai-codex-fast\/gpt-6-astra is not available/);
     assert.equal(spawn, undefined);
-    await writeFile(resolve(agentDir, 'agents/architect.md'), '---\nname: architect\ndescription: Reviews boundaries\n---\n');
     await writeFile(configPath, initialConfig);
 
     // Muse max remains in the user config, but the runtime only offers xhigh.
