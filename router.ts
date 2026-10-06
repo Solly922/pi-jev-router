@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { FAST_MODE_PROVIDERS } from './fast-mode.ts';
 import type { UsageReport } from './usage.ts';
 
 export const THINKING = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
@@ -16,6 +17,8 @@ export type ModelConfig = {
   benchmarks: { artificialAnalysis: { intelligenceIndex: number | null; costPerTask: number | null } };
   /** Where live subscription usage comes from. `modelWindow` picks an extra per-model Claude window. */
   usage?: { source: typeof USAGE_SOURCES[number]; modelWindow?: string };
+  /** Always launch this model on OpenAI's priority tier through pi-openai-fast-mode. */
+  fast?: boolean;
 };
 export type Config = {
   timeoutMs: number;
@@ -66,7 +69,11 @@ export function validateConfig(value: unknown): Config {
         !metric(m.benchmarks.artificialAnalysis.costPerTask) ||
         (m.usage !== undefined && (!m.usage || !USAGE_SOURCES.includes(m.usage.source) ||
           (m.usage.modelWindow !== undefined && (m.usage.source !== 'claude' ||
-            typeof m.usage.modelWindow !== 'string' || !m.usage.modelWindow.trim()))))) throw new Error(`Invalid Jev model entry: ${m?.id ?? 'unknown'}.`);
+            typeof m.usage.modelWindow !== 'string' || !m.usage.modelWindow.trim())))) ||
+        (m.fast !== undefined && typeof m.fast !== 'boolean')) throw new Error(`Invalid Jev model entry: ${m?.id ?? 'unknown'}.`);
+    if (m.fast && !FAST_MODE_PROVIDERS.includes(m.id.split('/')[0])) {
+      throw new Error(`fast is only supported for ${FAST_MODE_PROVIDERS.join(' and ')} models: ${m.id}.`);
+    }
   }
   for (const m of c.models) {
     if (m.routing.escalateTo && (m.routing.escalateTo === m.id || !c.models.some(other => other.id === m.routing.escalateTo))) {
@@ -136,8 +143,9 @@ export async function route(c: Config, p: Input, agents: Agent[], signal?: Abort
     type: 'choice', instructions: 'Choose the model and thinking effort adequate for the task. Prefer lower cost and effort when adequate. The configured default is a preference only if it appears in the supported thinking levels; otherwise ignore it. Routing hints and escalation targets are advisory only; no second agent is launched. Null benchmarks mean unknown, not zero. User notes in state are advisory preferences. Model grades are user-assigned 1-10 scores: favor higher grades for skills relevant to the task, but an absent grade means unknown, not zero. Task adequacy comes first. Select none if no option is adequate.' +
       (hasUsage ? USAGE_INSTRUCTIONS : ''),
     criteria: { ...Object.fromEntries(choices.map((s, i) => {
-      // The configured usage source is local plumbing; Jev gets the measured report instead.
-      const { usage: _source, ...model } = c.models.find(m => m.id === s.model)!;
+      // The configured usage source is local plumbing; Jev gets the measured report instead. `fast`
+      // is a launch setting, and Jev could read it as a cheaper model.
+      const { usage: _source, fast: _fast, ...model } = c.models.find(m => m.id === s.model)!;
       return [`option_${i}`, { ...model, selectedThinking: s.thinking,
         ...(hasUsage ? { usage: usage[s.model] ?? { status: 'unknown' } } : {}) }];
     })), none: 'No suitable execution configuration.' },

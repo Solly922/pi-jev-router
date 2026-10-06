@@ -3,6 +3,7 @@ import { basename, dirname, resolve } from 'node:path';
 import { Type } from 'typebox';
 import { getSupportedThinkingLevels, StringEnum } from '@earendil-works/pi-ai';
 import { getAgentDir, parseFrontmatter, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import { FAST_MODE_EXTENSION, fastVariant, loadsFastMode } from './fast-mode.ts';
 import { THINKING, pairs, route, rpc, validateConfig, validateInput } from './router.ts';
 import { collectUsage } from './usage.ts';
 import { claudeUsage } from './usage-claude.ts';
@@ -64,7 +65,7 @@ export default function jevRouter(pi: ExtensionAPI) {
         : Promise.resolve({});
       // pi-subagents 0.19 reloadCustomAgents uses process.cwd(), even when ctx.cwd differs.
       // Match that discovery base exactly; a union could approve definitions the executor never loads.
-      const definitions = new Map<string, { path: string; description: unknown; enabled: unknown }>();
+      const definitions = new Map<string, { path: string; description: unknown; enabled: unknown; fastMode: boolean }>();
       const discoveryCwd = process.cwd();
       for (const folder of [resolve(getAgentDir(), 'agents'), resolve(discoveryCwd, '.agents/agents'), resolve(discoveryCwd, '.pi/agents')]) {
         let files: string[];
@@ -75,7 +76,8 @@ export default function jevRouter(pi: ExtensionAPI) {
           const text = await readFile(path, 'utf8');
           const { frontmatter } = parseFrontmatter(text.replace(/^\uFEFF/, ''));
           const name = typeof frontmatter.name === 'string' && frontmatter.name.trim() ? frontmatter.name.trim() : basename(file, '.md');
-          definitions.set(name, { path, description: frontmatter.description, enabled: frontmatter.enabled });
+          definitions.set(name, { path, description: frontmatter.description, enabled: frontmatter.enabled,
+            fastMode: loadsFastMode(frontmatter) });
         }
       }
       const agents = config.agents.map(entry => {
@@ -89,15 +91,21 @@ export default function jevRouter(pi: ExtensionAPI) {
       const selection = await route(config, params, agents, signal, fetch, process.env.TYPESAFE_API_KEY, await usage);
       signal?.throwIfAborted();
       const model = available.find(m => `${m.provider}/${m.id}` === selection.model)!;
+      const fast = config.models.find(m => m.id === selection.model)!.fast === true;
+      // Without the extension in the child, the fast copy's ID would reach OpenAI and fail.
+      if (fast && !definitions.get(selection.agent)!.fastMode) {
+        throw new Error(`${selection.agent} does not load ${FAST_MODE_EXTENSION}, so it cannot run ${selection.model} with fast: true. ` +
+          `Add ${FAST_MODE_EXTENSION} to its extensions: list, or remove fast from that model in jev-router/config.json.`);
+      }
       const result = await rpc(pi.events, 'spawn', {
         type: selection.agent, prompt: params.prompt,
-        options: { model, thinkingLevel: selection.thinking, description: params.description,
+        options: { model: fast ? fastVariant(model) : model, thinkingLevel: selection.thinking, description: params.description,
           isBackground: true, ...(params.max_turns === undefined ? {} : { maxTurns: params.max_turns }) },
       }, config.timeoutMs, signal);
       if (typeof result?.id !== 'string' || !result.id) throw new Error('Executor returned no agent ID. Do not retry automatically.');
       return {
-        content: [{ type: 'text', text: `Started ${selection.agent}: ${selection.model}, thinking ${selection.thinking}. Agent ID: ${result.id}. Route: ${selection.source}. Existing subagent completion notifications will report the result.` }],
-        details: { agentId: result.id, ...selection },
+        content: [{ type: 'text', text: `Started ${selection.agent}: ${selection.model}${fast ? ' (fast)' : ''}, thinking ${selection.thinking}. Agent ID: ${result.id}. Route: ${selection.source}. Existing subagent completion notifications will report the result.` }],
+        details: { agentId: result.id, ...selection, fast },
       };
     },
   });

@@ -90,6 +90,26 @@ test('notes and grades are optional but reject malformed values', () => {
   }
 });
 
+test('fast is an OpenAI-only boolean and never reaches Jev', async () => {
+  const original = config();
+  const openai = (fast: unknown) => ({ ...original.models[1], id: 'openai-codex/gpt-6.1-sol', fast });
+  for (const fast of ['true', 1, null]) {
+    assert.throws(() => validateConfig({ ...original, models: [...original.models, openai(fast)] }), /Invalid Jev model entry/);
+  }
+  assert.throws(() => validateConfig({ ...original, models: [original.models[0], { ...original.models[1], fast: true }] }),
+    /fast is only supported for openai and openai-codex models: local\/strong/);
+  // fast: false is allowed anywhere; it is the default.
+  validateConfig({ ...original, models: [original.models[0], { ...original.models[1], fast: false }] });
+
+  const c = validateConfig({ ...original, models: [...original.models, openai(true)] });
+  await route(c, task, agents, undefined, async (_url, init) => {
+    const { criteria } = JSON.parse(init!.body as string).questions.execution;
+    assert.ok(Object.values(criteria).some((option: any) => option.id === 'openai-codex/gpt-6.1-sol'));
+    assert.ok(Object.values(criteria).every((option: any) => !('fast' in Object(option))));
+    return Response.json({ answers: { agent: answer('Explore'), execution: answer('option_0') } });
+  }, 'test-key');
+});
+
 test('complete explicit overrides bypass inference and preserve all fields', async () => {
   const result = await route(config(), { ...task, agent: 'architect', model: 'local/strong', thinking: 'high' }, agents,
     undefined, async () => { throw new Error('Must not call HTTP'); }, '');

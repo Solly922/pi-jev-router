@@ -69,6 +69,25 @@ test('JevAgent reads user config and delegates through the existing RPC contract
     assert.equal(spawn.options.isBackground, true);
     assert.equal(result.details.agentId, 'executor-agent-id');
     assert.equal(result.details.source, 'constraints');
+    assert.equal(result.details.fast, false);
+
+    // fast: true launches the marked copy that pi-openai-fast-mode maps back to the real model.
+    const fastConfig = JSON.parse(initialConfig);
+    fastConfig.models[0].fast = true;
+    await writeFile(configPath, JSON.stringify(fastConfig));
+    const fastResult = await run(originalCwd);
+    assert.deepEqual(spawn.options.model, { ...model, id: 'gpt-6-astra-fast', name: 'gpt-6-astra (fast)',
+      fastModeVariant: { baseModelId: 'gpt-6-astra' } });
+    assert.equal(fastResult.details.fast, true);
+    assert.match(fastResult.content[0].text, /openai-codex\/gpt-6-astra \(fast\), thinking high/);
+    // An agent that never loads the extension would send the copy's ID to OpenAI, so refuse it.
+    await writeFile(resolve(agentDir, 'agents/architect.md'),
+      '---\nname: architect\ndescription: Reviews boundaries\nextensions: pi-claude-bridge\n---\n');
+    spawn = undefined;
+    await assert.rejects(run(originalCwd), /architect does not load pi-openai-fast-mode/);
+    assert.equal(spawn, undefined);
+    await writeFile(resolve(agentDir, 'agents/architect.md'), '---\nname: architect\ndescription: Reviews boundaries\n---\n');
+    await writeFile(configPath, initialConfig);
 
     // Muse max remains in the user config, but the runtime only offers xhigh.
     const muse = { provider: 'meta', id: 'muse-spark-1.3-contributor', reasoning: true,
