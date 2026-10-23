@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { readFile, readdir } from 'node:fs/promises';
 import { basename, dirname, resolve } from 'node:path';
 import { Type } from 'typebox';
@@ -8,8 +9,33 @@ import { collectUsage } from './usage.ts';
 import { claudeUsage } from './usage-claude.ts';
 import { codexUsage } from './usage-codex.ts';
 
+/**
+ * pi-subagents' disableDefaultAgents as its loadSettings reads it: an unreadable or malformed file counts as
+ * empty, only a boolean counts, and the project's .pi/subagents.json wins over the global file.
+ */
+function readDefaultsDisabled(cwd: string): boolean {
+  let disabled = false;
+  for (const path of [resolve(getAgentDir(), 'subagents.json'), resolve(cwd, '.pi/subagents.json')]) {
+    try {
+      const value = JSON.parse(readFileSync(path, 'utf8'))?.disableDefaultAgents;
+      if (typeof value === 'boolean') disabled = value;
+    } catch { /* pi-subagents ignores a missing or malformed file too. */ }
+  }
+  return disabled;
+}
+
 /** Route one delegated task, then use pi-subagents' documented RPC executor. */
 export default function jevRouter(pi: ExtensionAPI) {
+  // pi-subagents applies disableDefaultAgents when it starts and on each /agents settings change, and never
+  // re-reads the files. Track the same value: read the files at this same startup, then follow its events.
+  // It usually loads first and emits settings_loaded before this listener exists, hence the file read.
+  let executorDefaultsDisabled = readDefaultsDisabled(process.cwd());
+  const followSettings = (data: any) => {
+    if (typeof data?.settings?.disableDefaultAgents === 'boolean') executorDefaultsDisabled = data.settings.disableDefaultAgents;
+  };
+  pi.events.on('subagents:settings_loaded', followSettings);
+  pi.events.on('subagents:settings_changed', followSettings);
+
   pi.registerTool({
     name: 'JevAgent',
     label: 'Jev-routed agent',
@@ -82,8 +108,24 @@ export default function jevRouter(pi: ExtensionAPI) {
           definitions.set(name, { path, description: frontmatter.description, enabled: frontmatter.enabled });
         }
       }
+      // With disableDefaultAgents on, pi-subagents registers no built-ins, so a built-in request launches its
+      // fallback agent. Refuse when either its applied value or the current files say so: a file edit takes
+      // effect in pi-subagents only after a restart, and the applied value can't see an edit made since.
+      const defaultsDisabled = executorDefaultsDisabled || readDefaultsDisabled(discoveryCwd);
       const agents = config.agents.map(entry => {
         const definition = definitions.get(entry.name);
+        if ('builtin' in entry) {
+          // A same-named file replaces the built-in. With defaults disabled, the executor also resolves a lone
+          // case variant such as General-Purpose. Either way Jev would read the wrong agent's description.
+          const file = [...definitions].find(([name]) => name.toLowerCase() === entry.name.toLowerCase());
+          if (file) {
+            throw new Error(`Agent ${entry.name} is configured as a pi-subagents built-in, but ${file[1].path} defines ${file[0]}. Remove or rename that file, or configure it by the name ${file[0]} with its definition path.`);
+          }
+          if (defaultsDisabled) {
+            throw new Error(`Agent ${entry.name} is a pi-subagents built-in, but disableDefaultAgents is on, so pi-subagents would launch its fallback agent instead.`);
+          }
+          return { name: entry.name, description: entry.description };
+        }
         if (!definition || definition.path !== resolve(dirname(configPath), entry.definition) || definition.enabled === false ||
             typeof definition.description !== 'string' || !definition.description.trim()) {
           throw new Error(`Agent ${entry.name} is missing, shadowed, disabled or has no description. Check its configured definition path.`);

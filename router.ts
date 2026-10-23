@@ -19,12 +19,19 @@ export type ModelConfig = {
   /** Launch this openai-codex model's always-priority twin from pi-openai-fast-mode. */
   fast?: boolean;
 };
+/**
+ * pi-subagents' code-defined agents (its src/default-agents.ts). By default its spawn runs an unknown type as
+ * its fallbackSubagent, general-purpose, so a misspelled built-in would launch a different agent with every tool.
+ */
+export const BUILTIN_AGENTS: readonly string[] = ['general-purpose', 'Explore', 'Plan'];
+/** A file agent's description comes from its definition. A built-in has no file, so the config supplies it. */
+export type AgentEntry = { name: string; definition: string } | { name: string; builtin: true; description: string };
 export type Config = {
   timeoutMs: number;
   notes?: string[];
   usage?: { cacheSeconds?: number; timeoutMs?: number };
   models: ModelConfig[];
-  agents: { name: string; definition: string }[];
+  agents: AgentEntry[];
   fallback?: Selection;
 };
 export type Input = { prompt: string; description: string; agent?: string; model?: string; thinking?: Thinking; max_turns?: number };
@@ -86,9 +93,18 @@ export function validateConfig(value: unknown): Config {
       throw new Error(`Invalid advisory escalation target for ${m.id}.`);
     }
   }
-  for (const a of c.agents) {
-    if (!a || typeof a.name !== 'string' || !/^[\w-]+$/.test(a.name) || a.name === 'none' ||
-        typeof a.definition !== 'string' || !a.definition.endsWith('.md')) throw new Error('Invalid Jev agent entry.');
+  for (const entry of c.agents) {
+    const a = entry as Record<string, unknown> | null;
+    if (!a || typeof a.name !== 'string' || !/^[\w-]+$/.test(a.name) || a.name === 'none') throw new Error('Invalid Jev agent entry.');
+    // Exactly one shape and no other fields. An ignored extra, such as a description beside a definition or
+    // `enabled: false`, would look like it took effect.
+    const keys = Object.keys(a).sort().join();
+    const fileBacked = keys === 'definition,name' && typeof a.definition === 'string' && a.definition.endsWith('.md');
+    const builtIn = keys === 'builtin,description,name' && a.builtin === true && BUILTIN_AGENTS.includes(a.name) &&
+      typeof a.description === 'string' && a.description.trim().length > 0;
+    if (!fileBacked && !builtIn) {
+      throw new Error(`Invalid Jev agent entry: ${a.name}. Give it a .md definition, or builtin: true and a description for one of ${BUILTIN_AGENTS.join(', ')}.`);
+    }
   }
   if (new Set(c.models.map(m => m.id)).size !== c.models.length ||
       new Set(c.agents.map(a => a.name.toLowerCase())).size !== c.agents.length) throw new Error('Duplicate Jev model or agent.');

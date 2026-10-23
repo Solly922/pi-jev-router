@@ -114,6 +114,89 @@ test('JevAgent reads user config and delegates through the existing RPC contract
       undefined, undefined, museContext), /No configured model supports the requested thinking level/);
     assert.equal(spawn, undefined);
 
+    // A built-in has no file, so its configured description is what Jev reads.
+    const builtinConfig = JSON.parse(initialConfig);
+    builtinConfig.agents.push({ name: 'general-purpose', builtin: true, description: 'Research and multi-step tasks' });
+    await writeFile(configPath, JSON.stringify(builtinConfig));
+    const builtinParams = { ...params, agent: 'general-purpose' };
+    const builtinResult = await tool.execute('builtin-call', builtinParams, undefined, undefined, context(originalCwd));
+    assert.equal(spawn.type, 'general-purpose');
+    assert.equal(builtinResult.details.agent, 'general-purpose');
+    // Without an agent override, Jev chooses from the configured built-in description.
+    const originalFetch = globalThis.fetch;
+    const originalKey = process.env.TYPESAFE_API_KEY;
+    let agentCriteria: any;
+    globalThis.fetch = (async (_url: unknown, init: any) => {
+      agentCriteria = JSON.parse(init.body).questions.agent.criteria;
+      return Response.json({ answers: { agent: { type: 'choice', choice: 'general-purpose' } } });
+    }) as typeof fetch;
+    process.env.TYPESAFE_API_KEY = 'test-key';
+    try {
+      const { agent: _agent, ...unpinned } = builtinParams;
+      assert.equal((await tool.execute('jev-builtin', unpinned, undefined, undefined, context(originalCwd))).details.source, 'jev');
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalKey === undefined) delete process.env.TYPESAFE_API_KEY;
+      else process.env.TYPESAFE_API_KEY = originalKey;
+    }
+    assert.equal(agentCriteria['general-purpose'], 'Research and multi-step tasks');
+    assert.equal(spawn.type, 'general-purpose');
+
+    // A same-named file replaces the built-in in pi-subagents, so the description would be wrong. The
+    // executor also resolves a lone case variant, such as General-Purpose, when defaults are disabled.
+    for (const [folder, file] of [[resolve(agentDir, 'agents'), 'general-purpose.md'],
+      [resolve(workspace, '.pi/agents'), 'general-purpose.md'], [resolve(agentDir, 'agents'), 'General-Purpose.md']]) {
+      await mkdir(folder, { recursive: true });
+      const override = resolve(folder, file);
+      await writeFile(override, '---\ndescription: Replaced general-purpose\n---\n');
+      process.chdir(workspace);
+      spawn = undefined;
+      await assert.rejects(tool.execute('shadowed-builtin', builtinParams, undefined, undefined, context(workspace)),
+        /general-purpose is configured as a pi-subagents built-in, but .*\.md defines general-purpose/i);
+      assert.equal(spawn, undefined);
+      process.chdir(originalCwd);
+      await rm(override);
+    }
+
+    // With defaults disabled the built-in isn't registered, so the executor would launch its fallback.
+    // Files merge like pi-subagents: only a boolean counts, and the project's .pi/subagents.json wins.
+    const refuseDisabled = async (tool: any, cwd: string) => {
+      spawn = undefined;
+      await assert.rejects(tool.execute('disabled-builtin', builtinParams, undefined, undefined, context(cwd)),
+        /general-purpose is a pi-subagents built-in, but disableDefaultAgents is on/);
+      assert.equal(spawn, undefined);
+    };
+    const launchBuiltin = async (cwd: string) => assert.equal(
+      (await tool.execute('enabled-builtin', builtinParams, undefined, undefined, context(cwd))).details.agent, 'general-purpose');
+    const globalSettings = resolve(agentDir, 'subagents.json');
+    const projectSettings = resolve(workspace, '.pi/subagents.json');
+    await writeFile(globalSettings, JSON.stringify({ disableDefaultAgents: true }));
+    await refuseDisabled(tool, originalCwd);
+    process.chdir(workspace);
+    // pi-subagents drops a non-boolean value, so the global true still applies.
+    await writeFile(projectSettings, JSON.stringify({ disableDefaultAgents: 0 }));
+    await refuseDisabled(tool, originalCwd);
+    await writeFile(projectSettings, JSON.stringify({ disableDefaultAgents: false }));
+    await launchBuiltin(workspace);
+    // Like agent files, the project settings come from process.cwd(), not the session's cwd.
+    await writeFile(projectSettings, JSON.stringify({ disableDefaultAgents: true }));
+    await rm(globalSettings);
+    await refuseDisabled(tool, originalCwd);
+    process.chdir(originalCwd);
+    await launchBuiltin(workspace);
+    await rm(projectSettings);
+
+    // pi-subagents applies settings when it starts and on /agents changes, and never re-reads the files.
+    // A change counts even when its save failed, and a startup value outlasts a later file edit.
+    events.emit('subagents:settings_changed', { settings: { disableDefaultAgents: true }, persisted: false });
+    await refuseDisabled(tool, originalCwd);
+    events.emit('subagents:settings_changed', { settings: { disableDefaultAgents: false }, persisted: true });
+    await launchBuiltin(originalCwd);
+    await writeFile(globalSettings, JSON.stringify({ disableDefaultAgents: true }));
+    const restarted = (await loadExtensions([resolve(here, 'index.ts')], originalCwd, events)).extensions[0].tools.get('JevAgent').definition;
+    await rm(globalSettings);
+    await refuseDisabled(restarted, originalCwd);
+
     // Restore Astra for the executor discovery and shadowing checks.
     await writeFile(configPath, initialConfig);
     // The executor discovers definitions from process.cwd(), not the session context cwd.

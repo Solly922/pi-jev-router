@@ -151,6 +151,28 @@ test('bad inputs and incompatible constraints fail before HTTP', async () => {
   assert.throws(() => validateConfig({ ...config(), timeoutMs: 0 }));
 });
 
+test('built-in agents need a known name and their own description, never a definition', () => {
+  const builtin = { name: 'general-purpose', builtin: true, description: 'Research and multi-step tasks' };
+  assert.deepEqual(validateConfig({ ...config(), agents: [builtin] }).agents, [builtin]);
+  for (const name of ['Explore', 'Plan']) {
+    assert.doesNotThrow(() => validateConfig({ ...config(), agents: [{ ...builtin, name }] }));
+  }
+  // pi-subagents runs an unknown type as general-purpose, so a typo must fail here instead.
+  for (const agent of [
+    { ...builtin, name: 'general_purpose' },
+    { ...builtin, name: 'researcher' },
+    { ...builtin, description: undefined },
+    { ...builtin, description: ' ' },
+    { ...builtin, builtin: 'yes' },
+    { ...builtin, definition: 'general-purpose.md' },
+    { name: 'general-purpose', builtin: false, description: 'Research' },
+    { name: 'architect', definition: 'architect.md', description: 'Ignored description' },
+    // Unknown fields would be silently ignored, so a user could think they restrict or disable an agent.
+    { ...builtin, tools: [] },
+    { name: 'architect', definition: 'architect.md', enabled: false },
+  ]) assert.throws(() => validateConfig({ ...config(), agents: [agent] }), /Invalid Jev agent entry/, JSON.stringify(agent));
+});
+
 test('missing key, HTTP failure, invalid and none selections fail closed without retry', async () => {
   await assert.rejects(route(config(), task, agents, undefined, fetch, ''), /TYPESAFE_API_KEY/);
   for (const response of [new Response('', { status: 429 }), Response.json({}),
